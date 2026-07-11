@@ -1,0 +1,97 @@
+name: Build portable executable
+
+# Builds a fully self-contained Windows package. The build downloads and
+# bundles calibre's "ebook-convert" engine so the end user needs to download
+# nothing else. The result is published as a build artifact (and attached to a
+# release when the workflow is triggered by a version tag).
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ "v*" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+          pip install -r requirements.txt
+
+      - name: Install calibre (provides the ebook-convert engine)
+        shell: pwsh
+        run: |
+          # Install calibre silently via its official MSI. This gives us the
+          # full, strongest conversion engine including ebook-convert.exe and
+          # all of its supporting binaries.
+          $ErrorActionPreference = "Stop"
+          $msi = "$env:RUNNER_TEMP\calibre.msi"
+          $url = "https://download.calibre-ebook.com/latest-calibre-64bit.msi"
+          Write-Host "Downloading calibre from $url"
+          Invoke-WebRequest -Uri $url -OutFile $msi
+          Write-Host "Installing calibre..."
+          Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /qn /norestart" -Wait
+
+      - name: Stage the bundled calibre engine
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $src = "C:\Program Files\Calibre2"
+          if (-not (Test-Path $src)) {
+            $src = "C:\Program Files (x86)\Calibre2"
+          }
+          if (-not (Test-Path "$src\ebook-convert.exe")) {
+            throw "ebook-convert.exe not found under $src"
+          }
+          Write-Host "Copying calibre engine from $src"
+          New-Item -ItemType Directory -Force -Path "engine\calibre" | Out-Null
+          Copy-Item -Path "$src\*" -Destination "engine\calibre" -Recurse -Force
+
+      - name: Build the executable with PyInstaller
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          # onedir build: the app plus the bundled calibre engine ship together
+          # in one folder that the user runs directly. Nothing else to download.
+          pyinstaller --noconfirm --clean --windowed `
+            --name EbookAlchemist `
+            --add-data "engine\calibre;calibre" `
+            ebook_alchemist.py
+
+      - name: Package the portable ZIP
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $out = "dist\EbookAlchemist"
+          if (-not (Test-Path $out)) { throw "PyInstaller output not found" }
+          Copy-Item README.md -Destination $out -Force -ErrorAction SilentlyContinue
+          Copy-Item SECURITY.md -Destination $out -Force -ErrorAction SilentlyContinue
+          Compress-Archive -Path "$out\*" -DestinationPath "EbookAlchemist-Portable-win64.zip" -Force
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: EbookAlchemist-Portable-win64
+          path: EbookAlchemist-Portable-win64.zip
+          if-no-files-found: error
+
+      - name: Attach to release (tags only)
+        if: startsWith(github.ref, "refs/tags/")
+        uses: softprops/action-gh-release@v2
+        with:
+          files: EbookAlchemist-Portable-win64.zip
