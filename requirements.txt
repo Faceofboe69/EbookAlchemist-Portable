@@ -1,0 +1,10 @@
+# Runtime dependencies for EbookAlchemist-Portable
+#
+# The actual ebook conversion is performed by calibre's bundled
+# "ebook-convert" engine, which is downloaded and packaged at build time by
+# the GitHub Actions workflow (see .github/workflows/build.yml). It is NOT a
+# pip dependency.
+#
+# The only Python dependency is optional drag-and-drop support.
+
+tkinterdnd2>=0.4.2
