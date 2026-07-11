@@ -1,6 +1,6 @@
 name: Build portable executable
 
-# Builds a fully self-contained Windows package. The build downloads and
+# Builds a fully self-contained Windows package. The build installs and
 # bundles calibre's "ebook-convert" engine so the end user needs to download
 # nothing else. The result is published as a build artifact (and attached to a
 # release when the workflow is triggered by a version tag).
@@ -36,31 +36,38 @@ jobs:
       - name: Install calibre (provides the ebook-convert engine)
         shell: pwsh
         run: |
-          # Install calibre silently via its official MSI. This gives us the
-          # full, strongest conversion engine including ebook-convert.exe and
-          # all of its supporting binaries.
+          # Install calibre via Chocolatey, which is preinstalled on the
+          # GitHub Windows runners and reliably handles the download + install.
+          # This gives us the full, strongest conversion engine including
+          # ebook-convert.exe and all of its supporting binaries.
           $ErrorActionPreference = "Stop"
-          $msi = "$env:RUNNER_TEMP\calibre.msi"
-          $url = "https://download.calibre-ebook.com/latest-calibre-64bit.msi"
-          Write-Host "Downloading calibre from $url"
-          Invoke-WebRequest -Uri $url -OutFile $msi
-          Write-Host "Installing calibre..."
-          Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /qn /norestart" -Wait
+          choco install calibre --no-progress --yes
 
-      - name: Stage the bundled calibre engine
+      - name: Locate and stage the bundled calibre engine
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $src = "C:\Program Files\Calibre2"
-          if (-not (Test-Path $src)) {
-            $src = "C:\Program Files (x86)\Calibre2"
+          $candidates = @(
+            "C:\Program Files\Calibre2",
+            "C:\Program Files (x86)\Calibre2"
+          )
+          $src = $null
+          foreach ($c in $candidates) {
+            if (Test-Path (Join-Path $c "ebook-convert.exe")) { $src = $c; break }
           }
-          if (-not (Test-Path "$src\ebook-convert.exe")) {
-            throw "ebook-convert.exe not found under $src"
+          if (-not $src) {
+            # Fall back to a filesystem search under Program Files.
+            $hit = Get-ChildItem -Path "C:\Program Files","C:\Program Files (x86)" -Filter "ebook-convert.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($hit) { $src = $hit.Directory.FullName }
           }
+          if (-not $src) { throw "ebook-convert.exe could not be located after install" }
           Write-Host "Copying calibre engine from $src"
           New-Item -ItemType Directory -Force -Path "engine\calibre" | Out-Null
           Copy-Item -Path "$src\*" -Destination "engine\calibre" -Recurse -Force
+          # Sanity check.
+          if (-not (Test-Path "engine\calibre\ebook-convert.exe")) {
+            throw "Staging failed: ebook-convert.exe missing in engine\calibre"
+          }
 
       - name: Build the executable with PyInstaller
         shell: pwsh
